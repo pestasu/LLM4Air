@@ -1,2 +1,2 @@
 # LLM4Air
-Air Quality Forecasters via Large Language Models
+Air Quality Prediction via Large Language Models.

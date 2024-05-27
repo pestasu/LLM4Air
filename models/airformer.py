@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from base.model import BaseModel
-from layers.embedding import AirEmbedding
+from abc import abstractmethod
+from layers.embed import AirEmbedding_time
+from random import sample
 import numpy as np
 import ipdb
 
@@ -10,6 +11,220 @@ dartboard_map = {0: '50-200',
                  1: '50-200-500',
                  2: '50',
                  3: '25-100-250'}
+class BaseModel(nn.Module):
+    """
+    Base class for all models
+    """
+    def __init__(self, args):
+        super(BaseModel, self).__init__()
+        self.num_nodes = args.num_nodes
+        self.seq_len = args.seq_len
+        self.horizon = args.pred_len
+        self.input_dim = args.input_dim
+        self.output_dim = args.output_dim
+
+    @abstractmethod
+    def forward(self):
+        """
+        Forward pass logic
+        :return: Model output
+        """
+        raise NotImplementedError
+    
+    def param_num(self, str):
+        return sum([param.nelement() for param in self.parameters()])
+
+    def __str__(self):
+        """
+        Model prints with number of trainable parameters
+        """
+        model_parameters = filter(lambda p: p.requires_grad, self.parameters())
+        params = sum([np.prod(p.size()) for p in model_parameters])
+        return super().__str__() + '\nTrainable parameters: {}'.format(params)
+
+class Airformer(BaseModel):
+    '''
+    the Airformer model
+    '''
+    def __init__(self, args):
+        super(Airformer, self).__init__(args)
+        hidden_channels = args.n_hidden
+        end_channels = args.n_hidden * 8
+        mlp_expansion = 2
+        self.data_floder = args.data_floder
+        self.feat_dims = args.feat_dims
+        self.dropout = args.dropout
+        self.blocks = args.blocks
+        self.spatial_flag = args.spatial_flag
+        self.stochastic_flag = args.stochastic_flag
+        self.residual_convs = nn.ModuleList()
+        self.skip_convs = nn.ModuleList()
+        self.bn = nn.ModuleList()
+        self.s_modules = nn.ModuleList()
+        self.t_modules = nn.ModuleList()
+        self.embedding_air = AirEmbedding_time(self.feat_dims)
+        self.alpha = 10  # the coefficient of kl loss
+        self.device = check_device()
+
+        self.get_dartboard_info()
+
+        # a conv for converting the input to the embedding
+        self.start_conv = nn.Conv2d(in_channels=self.input_dim,
+                                    out_channels=hidden_channels,
+                                    kernel_size=(1, 1))
+
+        for b in range(self.blocks):
+            window_size = self.seq_len // 2 ** (self.blocks - b - 1)
+            self.t_modules.append(CT_MSA(hidden_channels,
+                                         depth=1,
+                                         heads=args.num_heads,
+                                         window_size=window_size,
+                                         mlp_dim=hidden_channels*mlp_expansion,
+                                         num_time=self.seq_len, device=self.device))
+
+            if self.spatial_flag:
+                self.s_modules.append(DS_MSA(hidden_channels,
+                                             depth=1,
+                                             heads=args.num_heads,
+                                             mlp_dim=hidden_channels*mlp_expansion,
+                                             assignment=self.assignment,
+                                             mask=self.mask,
+                                             dropout=self.dropout))
+            else:
+                self.residual_convs.append(nn.Conv1d(in_channels=hidden_channels,
+                                                     out_channels=hidden_channels,
+                                                     kernel_size=(1, 1)))
+
+            self.bn.append(nn.BatchNorm2d(hidden_channels))
+
+        # create the generrative and inference model
+        if self.stochastic_flag:
+            self.generative_model = StochasticModel(
+                hidden_channels, hidden_channels, self.blocks)
+            self.inference_model = StochasticModel(
+                hidden_channels, hidden_channels, self.blocks)
+
+            self.reconstruction_model = \
+                nn.Sequential(nn.Conv2d(in_channels=hidden_channels*self.blocks,
+                                        out_channels=end_channels,
+                                        kernel_size=(1, 1),
+                                        bias=True),
+                              nn.ReLU(inplace=True),
+                              nn.Conv2d(in_channels=end_channels,
+                                        out_channels=self.input_dim,
+                                        kernel_size=(1, 1),
+                                        bias=True)
+                              )
+
+        # create the decoder layers
+        if self.stochastic_flag:
+            self.end_conv_1 = nn.Conv2d(in_channels=hidden_channels*self.blocks*2,
+                                        out_channels=end_channels,
+                                        kernel_size=(1, 1),
+                                        bias=True)
+        else:
+            self.end_conv_1 = nn.Conv2d(in_channels=hidden_channels*self.blocks,
+                                        out_channels=end_channels,
+                                        kernel_size=(1, 1),
+                                        bias=True)
+        self.end_conv_2 = nn.Conv2d(in_channels=end_channels,
+                                    out_channels=self.horizon*self.output_dim,
+                                    kernel_size=(1, 1),
+                                    bias=True)
+
+    def get_dartboard_info(self, dartboard=0):
+        '''
+        get dartboard-related attributes
+        '''
+        path_assignment = f'{self.data_floder}/local_partition/' + \
+            dartboard_map[dartboard] + '/assignment.npy'
+        path_mask = f'{self.data_floder}/local_partition/' + \
+            dartboard_map[dartboard] + '/mask.npy'
+        # print(path_assignment)
+        self.assignment = torch.from_numpy( # [N, N, M]
+            np.load(path_assignment)).float().to(self.device)
+        self.mask = torch.from_numpy( # [N, M]
+            np.load(path_mask)).bool().to(self.device) 
+
+    def forward(self, inputs, supports=None):
+        '''
+        inputs: the historical data
+        supports: adjacency matrix (actually our method doesn't use it)
+                Including adj here is for consistency with GNN-based methods
+        '''
+        x_embed = self.embedding_air(inputs)
+        x = torch.cat((inputs[..., :self.feat_dims[0]+4], x_embed), -1) # 6+4+11 [b, n, t, c]
+        x = x.permute(0, 3, 1, 2)  # [b, c, n, t]
+        # ipdb.set_trace()
+        x = self.start_conv(x)
+        d = []  # deterministic states
+        for i in range(self.blocks):
+            if self.spatial_flag:
+                x = self.s_modules[i](x)
+            else:
+                x = self.residual_convs[i](x)
+
+            x = self.t_modules[i](x)  # [b, c, n, t]
+
+            x = self.bn[i](x)
+            d.append(x)
+
+        d = torch.stack(d)  # [num_blocks, b, c, n, t]
+
+        # generatation and inference
+        if self.stochastic_flag:
+            d_shift = [(nn.functional.pad(d[i], pad=(1, 0))[..., :-1])
+                       for i in range(len(d))]
+            d_shift = torch.stack(d_shift)  # [num_blocks, b, c, n, t]
+            z_p, mu_p, sigma_p = self.generative_model(
+                d_shift)  # run the generative model
+            z_q, mu_q, sigma_q = self.inference_model(
+                d)  # run the inference model
+
+            # compute kl divergence loss
+            p = torch.distributions.Normal(mu_p, sigma_p)
+            q = torch.distributions.Normal(mu_q, sigma_q)
+            kl_loss = torch.distributions.kl_divergence(
+                q, p).mean() * self.alpha
+
+            # reshaping
+            num_blocks, B, C, N, T = d.shape
+            z_p = z_p.permute(1, 0, 2, 3, 4).reshape(
+                B, -1, N, T)  # [B, num_blocks*C, N, T]
+            z_q = z_q.permute(1, 0, 2, 3, 4).reshape(
+                B, -1, N, T)  # [B, num_blocks*C, N, T]
+
+            # reconstruction
+            x_rec = self.reconstruction_model(z_p)  # [b, c, n, t]
+            x_rec = x_rec.permute(0, 3, 2, 1)
+
+            # prediction
+            num_blocks, B, C, N, T = d.shape
+            d = d.permute(1, 0, 2, 3, 4).reshape(
+                B, -1, N, T)  # [B, num_blocks*C, N, T]
+            x_hat = torch.cat([d[..., -1:], z_q[..., -1:]], dim=1)
+            x_hat = F.relu(self.end_conv_1(x_hat))
+            x_hat = self.end_conv_2(x_hat)
+            x_hat = x_hat.permute(0, 2, 1, 3)
+            x_rec = x_rec.permute(0, 2, 1, 3)
+            resulte = {
+                'pred':x_hat,
+                'rec':x_rec,
+                'kl':kl_loss
+            }
+            return resulte
+
+        else:
+            num_blocks, B, C, N, T = d.shape
+            d = d.permute(1, 0, 2, 3, 4).reshape(
+                B, -1, N, T)  # [B, num_blocks*C, N, T]
+            x_hat = F.relu(d[..., -1:])
+            x_hat = F.relu(self.end_conv_1(x_hat))
+            x_hat = self.end_conv_2(x_hat)
+            resulte = {
+                'pred':x_hat
+            }
+            return resulte
 
 class LatentLayer(nn.Module):  
     '''
@@ -43,7 +258,6 @@ class LatentLayer(nn.Module):
         mu = torch.minimum(self.enc_out_1(h), torch.ones_like(h)*10)
         sigma = torch.minimum(self.enc_out_2(h), torch.ones_like(h)*10)
         return mu, sigma
-
 
 class StochasticModel(nn.Module):
     '''
@@ -99,185 +313,20 @@ class StochasticModel(nn.Module):
         sigmas = torch.stack(sigmas)
         return z, mus, sigmas
 
-class AirFormer(BaseModel):
-    '''
-    the AirFormer model
-    '''
-    def __init__(self,
-                 dropout=0.3,  # dropout rate
-                 spatial_flag=True,  # whether to use DS-MSA
-                 stochastic_flag=True,  # whether to use latent vairables
-                 hidden_channels=32,  # hidden dimension
-                 end_channels=512,  # the decoder dimension
-                 blocks=4,  # the number of stacked AirFormer blocks
-                 mlp_expansion=2,  # the mlp expansion rate in transformers
-                 num_heads=2,  # the number of heads
-                 dartboard=0,  # the type of dartboard
-                 **args):
-        super(AirFormer, self).__init__(**args)
-        self.dropout = dropout
-        self.blocks = blocks
-        self.spatial_flag = spatial_flag
-        self.stochastic_flag = stochastic_flag
-        self.residual_convs = nn.ModuleList()
-        self.skip_convs = nn.ModuleList()
-        self.bn = nn.ModuleList()
-        self.s_modules = nn.ModuleList()
-        self.t_modules = nn.ModuleList()
-        self.embedding_air = AirEmbedding()
-        self.alpha = 10  # the coefficient of kl loss
-
-        self.get_dartboard_info(dartboard)
-
-        # a conv for converting the input to the embedding
-        self.start_conv = nn.Conv2d(in_channels=self.input_dim,
-                                    out_channels=hidden_channels,
-                                    kernel_size=(1, 1))
-
-        for b in range(blocks):
-            window_size = self.seq_len // 2 ** (blocks - b - 1)
-            self.t_modules.append(CT_MSA(hidden_channels,
-                                         depth=1,
-                                         heads=num_heads,
-                                         window_size=window_size,
-                                         mlp_dim=hidden_channels*mlp_expansion,
-                                         num_time=self.seq_len, device=self.device))
-
-            if self.spatial_flag:
-                self.s_modules.append(DS_MSA(hidden_channels,
-                                             depth=1,
-                                             heads=num_heads,
-                                             mlp_dim=hidden_channels*mlp_expansion,
-                                             assignment=self.assignment,
-                                             mask=self.mask,
-                                             dropout=dropout))
-            else:
-                self.residual_convs.append(nn.Conv1d(in_channels=hidden_channels,
-                                                     out_channels=hidden_channels,
-                                                     kernel_size=(1, 1)))
-
-            self.bn.append(nn.BatchNorm2d(hidden_channels))
-
-        # create the generrative and inference model
-        if stochastic_flag:
-            self.generative_model = StochasticModel(
-                hidden_channels, hidden_channels, blocks)
-            self.inference_model = StochasticModel(
-                hidden_channels, hidden_channels, blocks)
-
-            self.reconstruction_model = \
-                nn.Sequential(nn.Conv2d(in_channels=hidden_channels*blocks,
-                                        out_channels=end_channels,
-                                        kernel_size=(1, 1),
-                                        bias=True),
-                              nn.ReLU(inplace=True),
-                              nn.Conv2d(in_channels=end_channels,
-                                        out_channels=self.input_dim,
-                                        kernel_size=(1, 1),
-                                        bias=True)
-                              )
-
-        # create the decoder layers
-        if self.stochastic_flag:
-            self.end_conv_1 = nn.Conv2d(in_channels=hidden_channels*blocks*2,
-                                        out_channels=end_channels,
-                                        kernel_size=(1, 1),
-                                        bias=True)
+def check_device(device=None):
+    if device is None:
+        print("`device` is missing, try to train and evaluate the model on default device.")
+        if torch.cuda.is_available():
+            print("cuda device is available, place the model on the device.")
+            return torch.device("cuda")
         else:
-            self.end_conv_1 = nn.Conv2d(in_channels=hidden_channels*blocks,
-                                        out_channels=end_channels,
-                                        kernel_size=(1, 1),
-                                        bias=True)
-        self.end_conv_2 = nn.Conv2d(in_channels=end_channels,
-                                    out_channels=self.horizon*self.output_dim,
-                                    kernel_size=(1, 1),
-                                    bias=True)
-
-    def get_dartboard_info(self, dartboard):
-        '''
-        get dartboard-related attributes
-        '''
-        path_assignment = 'data/local_partition/' + \
-            dartboard_map[dartboard] + '/assignment.npy'
-        path_mask = 'data/local_partition/' + \
-            dartboard_map[dartboard] + '/mask.npy'
-        print(path_assignment)
-        self.assignment = torch.from_numpy( # [N, N, M]
-            np.load(path_assignment)).float().to(self.device)
-        self.mask = torch.from_numpy( # [N, M]
-            np.load(path_mask)).bool().to(self.device) 
-
-    def forward(self, inputs, supports=None):
-        '''
-        inputs: the historical data
-        supports: adjacency matrix (actually our method doesn't use it)
-                Including adj here is for consistency with GNN-based methods
-        '''
-        # ipdb.set_trace()
-        x_embed = self.embedding_air(inputs[..., 11:15].long())
-        x = torch.cat((inputs[..., :11], x_embed, inputs[..., 15:]), -1)
-
-        x = x.permute(0, 3, 2, 1)  # [b, c, n, t]
-        x = self.start_conv(x)
-        d = []  # deterministic states
-        for i in range(self.blocks):
-            if self.spatial_flag:
-                x = self.s_modules[i](x)
-            else:
-                x = self.residual_convs[i](x)
-
-            x = self.t_modules[i](x)  # [b, c, n, t]
-
-            x = self.bn[i](x)
-            d.append(x)
-
-        d = torch.stack(d)  # [num_blocks, b, c, n, t]
-
-        # generatation and inference
-        if self.stochastic_flag:
-            d_shift = [(nn.functional.pad(d[i], pad=(1, 0))[..., :-1])
-                       for i in range(len(d))]
-            d_shift = torch.stack(d_shift)  # [num_blocks, b, c, n, t]
-            z_p, mu_p, sigma_p = self.generative_model(
-                d_shift)  # run the generative model
-            z_q, mu_q, sigma_q = self.inference_model(
-                d)  # run the inference model
-
-            # compute kl divergence loss
-            p = torch.distributions.Normal(mu_p, sigma_p)
-            q = torch.distributions.Normal(mu_q, sigma_q)
-            kl_loss = torch.distributions.kl_divergence(
-                q, p).mean() * self.alpha
-
-            # reshaping
-            num_blocks, B, C, N, T = d.shape
-            z_p = z_p.permute(1, 0, 2, 3, 4).reshape(
-                B, -1, N, T)  # [B, num_blocks*C, N, T]
-            z_q = z_q.permute(1, 0, 2, 3, 4).reshape(
-                B, -1, N, T)  # [B, num_blocks*C, N, T]
-
-            # reconstruction
-            x_rec = self.reconstruction_model(z_p)  # [b, c, n, t]
-            x_rec = x_rec.permute(0, 3, 2, 1)
-
-            # prediction
-            num_blocks, B, C, N, T = d.shape
-            d = d.permute(1, 0, 2, 3, 4).reshape(
-                B, -1, N, T)  # [B, num_blocks*C, N, T]
-            x_hat = torch.cat([d[..., -1:], z_q[..., -1:]], dim=1)
-            x_hat = F.relu(self.end_conv_1(x_hat))
-            x_hat = self.end_conv_2(x_hat)
-            return x_hat, x_rec, kl_loss
-
+            print("cuda device is not available, place the model on cpu.")
+            return torch.device("cpu")
+    else:
+        if isinstance(device, torch.device):
+            return device
         else:
-            num_blocks, B, C, N, T = d.shape
-            d = d.permute(1, 0, 2, 3, 4).reshape(
-                B, -1, N, T)  # [B, num_blocks*C, N, T]
-            x_hat = F.relu(d[..., -1:])
-            x_hat = F.relu(self.end_conv_1(x_hat))
-            x_hat = self.end_conv_2(x_hat)
-            return x_hat
-
+            return torch.device(device)
 
 class SpatialAttention(nn.Module):
     # dartboard project + MSA
@@ -316,7 +365,8 @@ class SpatialAttention(nn.Module):
         # query: [bn, 1, c]
         # key/value target: [bn, num_sector, c]
         # [b, n, num_sector, c]
-        ipdb.set_trace()
+
+        self.assignment = self.assignment.to(x.device)
         pre_kv = torch.einsum('bnc,mnr->bmrc', x, self.assignment)
 
         pre_kv = pre_kv.reshape(-1, self.num_sector, C)  # [bn, num_sector, c]
@@ -330,7 +380,7 @@ class SpatialAttention(nn.Module):
 
         attn = attn.reshape(B, N, self.num_heads, 1,
                             self.num_sector) + self.relative_bias # you can fuse external factors here as well
-        mask = self.mask.reshape(1, N, 1, 1, self.num_sector)
+        mask = self.mask.reshape(1, N, 1, 1, self.num_sector).to(x.device)
         # masking
         attn = attn.masked_fill_(mask, float(
             "-inf")).reshape(B * N, self.num_heads, 1, self.num_sector).softmax(dim=-1)
@@ -338,7 +388,6 @@ class SpatialAttention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
-
 
 class DS_MSA(nn.Module):
     # Dartboard Spatial MSA
@@ -370,7 +419,6 @@ class DS_MSA(nn.Module):
             x = ff(x) + x
         x = x.reshape(b, t, n, c).permute(0, 3, 2, 1)
         return x
-
 
 class TemporalAttention(nn.Module):
     def __init__(self, dim, heads=2, window_size=1, qkv_bias=False, qk_scale=None, dropout=0., causal=True, device=None):
@@ -405,7 +453,7 @@ class TemporalAttention(nn.Module):
 
         # merge key padding and attention masks
         attn = (q @ k.transpose(-2, -1)) * self.scale  # [b, heads, T, T]
-
+        self.mask = self.mask.to(x.device)
         if self.causal:
             attn = attn.masked_fill_(self.mask == 0, float("-inf"))
 
@@ -417,7 +465,6 @@ class TemporalAttention(nn.Module):
         if self.window_size > 0:  # reshape to the original size
             x = x.reshape(B_prev, T_prev, C_prev)
         return x
-
 
 class CT_MSA(nn.Module):
     # Causal Temporal MSA

@@ -3,23 +3,20 @@
         "dataset_root_dir": "data/",
         "data_path": "tianjin/",
         "feat_dims": [6,6,4],
-        "batch_size": 128,
-        "early_stop": 10,
-        "need_normalized": false,
-        "version": -1
+        "batch_size": 32,
+        "early_stop": 10
     },
     "llmair": {
         "learning_rate": 5e-4,
-        "grad_clip": 0.6,
-        "patience": 5,
+        "weight_decay":0.0,
         "seq_len": 24,
         "pred_len": 24,
-        "dropout":0.1
+        "dropout":0.1,
+        "alpha": 0.1
     },
     "airformer": {
         "learning_rate": 5e-4,
-        "grad_clip": 0.6,
-        "patience": 5,
+        "weight_decay":0.0,
         "seq_len": 24,
         "pred_len": 24,
         "input_dim":17,

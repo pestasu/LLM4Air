@@ -1,20 +1,34 @@
-import numpy as np
-import torch
-import matplotlib.pyplot as plt
-import pandas as pd
+import os
 import math
+import json
+import glob
+import logging
+import numpy as np
+import pandas as pd
+import torch
 import torch.distributed as dist
 from distutils.util import strtobool
 from datetime import datetime
-plt.switch_backend('agg')
+from pathlib import Path
 
+my_logger = 'lazy'
+logger = logging.getLogger(my_logger)
+
+def gen_version(args):
+    dirs = glob.glob(os.path.join('saved/'+ args.data+'/'+args.model, '*'))
+    if not dirs:
+        return 0
+
+    version = max([int(x.split(os.sep)[-1].split('_')[-1])
+                for x in dirs]) + 1
+    return version
 
 def adjust_learning_rate(optimizer, epoch, args):
     if args.lradj == 'type1':
         lr_adjust = {epoch: args.learning_rate * (0.5 ** (epoch - 1))}    
     elif args.lradj == 'type2':
         lr_adjust = {epoch: args.learning_rate * (0.6 ** epoch)}  
-    elif args.lradj == "cosine":
+    elif args.lradj == "type3":
         lr_adjust = {epoch: args.learning_rate /2 * (1 + math.cos(epoch / args.train_epochs * math.pi))}
 
     if epoch in lr_adjust.keys():
@@ -84,7 +98,6 @@ class EarlyStopping:
                 # delete parameters that do not require gradient
                 del state_dict[k]
         torch.save(state_dict, path + '/' + f'checkpoint.pth')
-        
 
 
 class dotdict(dict):
@@ -139,6 +152,13 @@ def visual(true, preds=None, name='./pic/test.pdf'):
         plt.plot(preds, label='Prediction', linewidth=2)
     plt.legend()
     plt.savefig(name, bbox_inches='tight')
+
+def is_json_serializable(obj):
+    try:
+        json.dumps(obj)
+        return True
+    except TypeError:
+        return False
 
 def serializable_parts_of_dict(d):
     serializable_dict = {k: v for k, v in d.items() if is_json_serializable(v)}

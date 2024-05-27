@@ -10,13 +10,13 @@ from transformers.models.gpt2.modeling_gpt2 import GPT2Model
 from transformers.models.gpt2.configuration_gpt2 import GPT2Config
 from transformers import BertTokenizer, BertModel
 from einops import rearrange
-from layers.Embed import DataEmbedding, DataEmbedding_wo_time
+from layers.embed import DataEmbedding, DataEmbedding_wo_time
 
 
-class Model(nn.Module):
+class GPT4ts(nn.Module):
     
     def __init__(self, configs):
-        super(Model, self).__init__()
+        super(GPT4ts, self).__init__()
         self.is_ln = configs.ln
         self.task_name = configs.task_name
         self.pred_len = configs.pred_len

@@ -1,2 +1,4 @@
-# ignore data directory
-data
+# ignore directory
+data 
+saved
+pretrained_model

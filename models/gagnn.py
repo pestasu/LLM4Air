@@ -40,12 +40,13 @@ class Gagnn(nn.Module):
         self.group_num = args.group_num
         self.edge_h = args.edge_h
         self.gnn_layer = args.gnn_layer
-        self.pred_step = args.pred_step
-        self.inpute_size = args.feat_dims[0]+args.feat_dims[1]-2
+        self.pred_len = args.pred_len
+        self.seq_len = args.seq_len
+        self.inpute_size = args.input_size
         if self.encoder == 'self':
-            self.encoder_layer = TransformerEncoderLayer(self.inpute_size, nhead=4, dim_feedforward=256)
+            self.encoder_layer = TransformerEncoderLayer(self.inpute_size, nhead=2, dim_feedforward=128)
 			# self.x_embed = Lin(self.inpute_size, x_em)
-            self.x_embed = Lin(TIME_WINDOW*self.inpute_size, args.x_em)
+            self.x_embed = Lin(self.seq_len*self.inpute_size, args.x_em)
         elif self.encoder == 'lstm':
             self.input_LSTM = nn.LSTM(self.inpute_size,args.x_em,num_layers=1,batch_first=True)
         if self.w_init == 'rand':
@@ -68,13 +69,12 @@ class Gagnn(nn.Module):
             self.predMLP = Seq(Lin(args.gnn_h,16),ReLU(inplace=True),Lin(16,1),ReLU(inplace=True))
         else:
             self.decoder = DecoderModule(args.x_em,args.edge_h,args.gnn_h,args.gnn_layer,args.city_num,args.group_num)
-            self.predMLP = Lin(args.gnn_h,self.pred_step)
-                # Seq(
-                # Lin(args.gnn_h,16),
-                # # ReLU(inplace=True),
-                # Lin(16,self.pred_step),
-                # # ReLU(inplace=True)
-                # )	
+            self.predMLP = Seq(
+                Lin(args.gnn_h,16),
+                ReLU(inplace=True),
+                Lin(16,self.pred_len),
+                ReLU(inplace=True)
+                )	 #Lin(args.gnn_h,self.pred_len)
     def batchInput(self,x,edge_w,edge_index):
         sta_num = x.shape[1]
         x = x.reshape(-1,x.shape[-1])
@@ -87,29 +87,31 @@ class Gagnn(nn.Module):
         edge_index = edge_index.reshape(2,-1)
         return x, edge_w, edge_index
 
-    def forward(self, x, edge_index, edge_w, loc, is_train=True): 
+    def forward(self, x, edge_index, edge_w, loc): 
         edge_index, edge_w, loc = edge_index.to(x.device), edge_w.to(x.device), loc.to(x.device)
         edge_index = edge_index.repeat(x.shape[0], 1, 1)
         edge_w = edge_w.repeat(x.shape[0], 1, 1)
         loc = loc.repeat(x.shape[0], 1, 1)
-        x = x.permute(0, 2, 1, 3) # B,N,L,C
-        uu = torch.cat((x[:,0,-1,:1], x[:,0,-1,2:4]), -1).long()
-        # import ipdb
         # ipdb.set_trace()
+        # x = x.permute(0, 2, 1, 3) # B,N,L,C
+        uu = torch.cat((x[:,0,-1,-4:-3], x[:,0,-1,-2:]), -1).long() #month,day,weekday,hour
+
         x = x.reshape(-1,x.shape[2],x.shape[3])
-        x = x[..., 4:-2]
+        x = x[..., :self.inpute_size]
         if self.encoder == 'self':
             # [S,B,E]
             # print(x.shape)
+            # ipdb.set_trace()
             x = x.transpose(0,1)
             x = self.encoder_layer(x)
             x = x.transpose(0,1)
             # print(x.shape)
-            x = x.reshape(-1,self.city_num,TIME_WINDOW*x.shape[-1])
+            x = x.reshape(-1,self.city_num,self.seq_len*x.shape[-1])
             x = self.x_embed(x)
-            # x = x.reshape(-1,self.city_num,TIME_WINDOW,x.shape[-1])
+            # x = x.reshape(-1,self.city_num,self.seq_len,x.shape[-1])
             # x = torch.max(x,dim=-2).values
             # print(x.shape)
+
         elif self.encoder == 'lstm':
             _,(x,_) = self.input_LSTM(x)
             x = x.reshape(-1,self.city_num,x.shape[-1])
@@ -180,7 +182,7 @@ class Gagnn(nn.Module):
             new_x = self.global_gnn[i](new_x,edge_index,edge_w)
         # print(new_x.shape)
         if self.mode == 'ag':
-            for i in range(self.pred_step):
+            for i in range(self.pred_len):
                 new_x = self.decoder(new_x,self.w,g_edge_index,g_edge_w,edge_index,edge_w)
                 tmp_res = self.predMLP(new_x)
                 tmp_res = tmp_res.reshape(-1,self.city_num)
@@ -192,9 +194,9 @@ class Gagnn(nn.Module):
         else:
             new_x = self.decoder(new_x,self.w,g_edge_index,g_edge_w,edge_index,edge_w)
             res = self.predMLP(new_x)
-            # res = res.reshape(-1,self.city_num,self.pred_step)
+            res = res.reshape(-1,self.city_num,self.pred_len, 1)
 
-        return {'y_hat': res}
+        return res
 
 class DecoderModule(nn.Module):
     def __init__(self,x_em,edge_h,gnn_h,gnn_layer,city_num,group_num):

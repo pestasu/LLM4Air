@@ -4,8 +4,6 @@ import torch.nn.functional as F
 from transformers.models.gpt2.modeling_gpt2 import GPT2Model
 from transformers.models.gpt2.configuration_gpt2 import GPT2Config
 from einops import rearrange
-from models.embedding import DataEmbedding
-from encoders import wrapper
 import json
 import os
 
@@ -27,7 +25,6 @@ class gpt4ts_classification(nn.Module):
 
         self.padding_patch_layer = nn.ReplicationPad1d((0, self.stride))
         self.patch_num += 1
-        # self.enc_embedding = DataEmbedding(self.feat_dim * self.patch_size, config['d_model'], config['dropout'])
 
         self.gpt2 = GPT2Model.from_pretrained('./models/gpt2', output_attentions=True, output_hidden_states=True)
         # just use 6 layers (12->6)
@@ -112,10 +109,10 @@ class gpt4ts_classification(nn.Module):
         return outputs
 
 
-class gpt4ts_forecasting(nn.Module):
+class Test(nn.Module):
 
     def __init__(self, config):
-        super(gpt4ts_forecasting, self).__init__()
+        super(Test, self).__init__()
         self.is_gpt = config['is_gpt']
         self.patch_size = config['patch_size']
         self.pretrain = config['pretrain']

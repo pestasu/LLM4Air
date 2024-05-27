@@ -17,10 +17,10 @@ def get_config(model_name, dataset_name, config_file=""):
         config (dict): config of the given dataset and model
     """
     if config_file == "":
-        config_file = Path(__file__).parent / "configs" / "dataset_name" /"config.json"
+        config_file = Path(__file__).parent / dataset_name /"config.json"
     with open(config_file, 'r') as f:
         config_all = json.load(f)
-    model_args = config_all[model_name].get('commonParams', {})
+    model_args = config_all['modelParams'].get(model_name, {})
     dataset_args = config_all['datasetParams']
 
     # update config

@@ -9,8 +9,6 @@ import torch
 import torch.nn as nn
 from torch import optim
 import matplotlib.pyplot as plt
-from accelerate import Accelerator, DeepSpeedPlugin
-from accelerate import DistributedDataParallelKwargs
 
 from exp.exp_basic import Exp_Basic
 from utils import metrics, graph
@@ -27,12 +25,6 @@ class Exp_timellm(Exp_Basic):
         super(Exp_timellm, self).__init__(args)
         self.cur_exp = ii
         self.rec_mae = nn.L1Loss()
-
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-        deepspeed_plugin = DeepSpeedPlugin(hf_ds_config='./ds_config_zero2.json')
-        self.accelerator = Accelerator(kwargs_handlers=[ddp_kwargs], deepspeed_plugin=deepspeed_plugin)
-        self.train_loader, self.valid_loader, self.test_loader, self.model, self.optimizer = self.accelerator.prepare(
-        self.dataloader['train'], self.dataloader['valid'], self.dataloader['test'], self.model, self.optimizer)
 
     def build_model(self):
         model = self.model_dict[self.model_name].Model(self.args).float()
@@ -56,12 +48,12 @@ class Exp_timellm(Exp_Basic):
         the training process of a batch
         '''   
         self.optimizer.zero_grad()
-        x = x.to(self.accelerator.device)
-        y = y.to(self.accelerator.device)
+        x = x.to(self.device)
+        y = y.to(self.device)
 
         # decoder input
-        dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.accelerator.device)
-        dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.accelerator.device)
+        dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.device)
+        dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
         outputs = self.model(x, None, dec_inp, None)
 
@@ -77,7 +69,7 @@ class Exp_timellm(Exp_Basic):
         return loss.item()
 
     def train(self, setting):
-        train_steps = len(self.train_loader)
+        train_steps = len(self.dataloader['train'])
 
         if self.use_amp:
             grad_scaler = torch.cuda.amp.GradScaler()
@@ -103,7 +95,7 @@ class Exp_timellm(Exp_Basic):
 
             logger.info('------start training!------')
             start_time = time.time()
-            for i, (batch_x, batch_y) in enumerate(self.train_loader):
+            for i, (batch_x, batch_y) in enumerate(self.dataloader['train']):
                 iter_count += 1
                 loss = self.train_batch(batch_x, batch_y)
                 train_losses.append(loss)
@@ -138,15 +130,15 @@ class Exp_timellm(Exp_Basic):
         self.model.eval()
         total_time = 0
         with torch.no_grad():
-            for i, (batch_x, batch_y) in enumerate(self.valid_loader):
-                batch_x = batch_x.to(self.accelerator.device)
-                batch_y = batch_y.to(self.accelerator.device)
+            for i, (batch_x, batch_y) in enumerate(self.dataloader['valid']):
+                x = batch_x.to(self.device)
+                y = batch_y.to(self.device)
 
                 time_now = time.time()
 
                 # decoder input
-                dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.accelerator.device)
-                dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.accelerator.device)
+                dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.device)
+                dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
                 outputs = self.model(x, None, dec_inp, None)
 
@@ -183,9 +175,9 @@ class Exp_timellm(Exp_Basic):
 
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y) in enumerate(self.test_loader):
-                batch_x = batch_x.to(self.accelerator.device)
-                batch_y = batch_y.to(self.accelerator.device)
+            for i, (batch_x, batch_y) in enumerate(self.dataloader['test']):
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device)
 
                 outputs = self.model(batch_x)
                 pred, true = self._inverse_transform([outputs['pred'], batch_y])

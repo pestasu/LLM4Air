@@ -8,7 +8,7 @@ import torchvision.models as models
 from torchvision.ops import RoIPool
 from torch.nn.utils import weight_norm
 
-class AirEmbedding_time(nn.Module):
+class AirEmbedding_time(nn.Module):# Airformer
     '''
     Embed catagorical variables.
     '''
@@ -66,6 +66,7 @@ class TokenEmbedding(nn.Module):
                     m.weight, mode='fan_in', nonlinearity='leaky_relu')
 
     def forward(self, x):
+        x = x.to(torch.float32)  # 确保输入张量为 float32 类型
         x = self.tokenConv(x.permute(0, 2, 1)).transpose(1, 2)
         return x
 
@@ -147,7 +148,7 @@ class DataEmbedding(nn.Module):
 
     def forward(self, x, x_mark):
         if x_mark is None:
-            x = self.value_embedding(x) + self.position_embedding(x)
+            x = self.value_embedding(x) + self.position_embedding(x).to(x.device)
         else:
             x = self.value_embedding(
                 x) + self.temporal_embedding(x_mark) + self.position_embedding(x)
@@ -172,6 +173,7 @@ class DataEmbedding_wo_pos(nn.Module):
             x = self.value_embedding(x) + self.temporal_embedding(x_mark)
         return self.dropout(x)
 
+
 class ReplicationPad1d(nn.Module):
     def __init__(self, padding) -> None:
         super(ReplicationPad1d, self).__init__()
@@ -181,6 +183,7 @@ class ReplicationPad1d(nn.Module):
         replicate_padding = input[:, :, -1].unsqueeze(-1).repeat(1, 1, self.padding[-1])
         output = torch.cat([input, replicate_padding], dim=-1)
         return output
+
 
 class PatchEmbedding(nn.Module):
     def __init__(self, d_model, patch_len, stride, dropout):
@@ -209,6 +212,7 @@ class PatchEmbedding(nn.Module):
         x = self.value_embedding(x)
         return self.dropout(x), n_vars
 
+
 class DataEmbedding_wo_time(nn.Module):
     def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
         super(DataEmbedding_wo_time, self).__init__()
@@ -220,3 +224,4 @@ class DataEmbedding_wo_time(nn.Module):
     def forward(self, x):
         x = self.value_embedding(x) + self.position_embedding(x)
         return self.dropout(x)
+

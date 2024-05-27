@@ -1,0 +1,54 @@
+{
+    "datasetParams": {
+        "dataset_root_dir": "data/",
+        "data_path": "shenzhen/",
+        "feat_dims": [6,6,4],
+        "batch_size": 128,
+        "early_stop": 10,
+        "need_normalized": false,
+        "version": -1
+    },
+    "llmair": {
+        "learning_rate": 5e-4,
+        "grad_clip": 0.6,
+        "patience": 5,
+        "seq_len": 24,
+        "pred_len": 24,
+        "dropout":0.1
+    },
+    "airformer": {
+        "learning_rate": 5e-4,
+        "grad_clip": 0.6,
+        "patience": 5,
+        "seq_len": 24,
+        "pred_len": 24,
+        "input_dim":17,
+        "output_dim":1,
+        "num_nodes":35,
+        "n_hidden": 32,
+        "num_heads":2,
+        "dartboard":0,
+        "stochastic_flag":true,
+        "spatial_flag":true,
+        "blocks":2,
+        "dropout": 0.1
+    },
+    "gagnn": {
+        "learning_rate": 1e-3,
+        "weight_decay": 0.0,
+        "grad_clip": 0.6,
+        "patience": 5,
+        "pred_step":24,
+        "mode":"full",
+        "encoder":"lstm",
+        "w_init":"rand",
+        "x_em":32,
+        "date_em":4,
+        "loc_em":12,
+        "edge_h":12,
+        "gnn_h":32,
+        "gnn_layer":2,
+        "city_num":13,
+        "group_num":7
+    }
+  }

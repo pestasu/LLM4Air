@@ -5,9 +5,16 @@ class Exp_Basic(object):
     def __init__(self, args):
         self.args = args
         self.model_dict = {
-            'AutoTimes_Llama': AutoTimes_Llama,
-            'AutoTimes_Gpt2': AutoTimes_Gpt2,
-            'AutoTimes_Opt_1b': AutoTimes_Opt_1b
+            # spatial-temporal
+            'Airformer': airformer,
+            'Gagnn': gagnn,
+            # LLM
+            'AutoTimes': autotimes,
+            'TEST': test,
+            'GPT4TS': gpt4ts,
+            'aLLM4TS': allm4ts,
+            # Ours
+            'LLM4Air':llm4air,
         }
         self.model = self._build_model()
 

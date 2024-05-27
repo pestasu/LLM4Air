@@ -105,6 +105,29 @@ class StandardScaler():
     def inverse_transform(self, data):
         return (data * self.std) + self.mean
 
+def set_logger(log_dir, model_name, dataset_name, verbose_level=1):
+    # base logger
+    log_file_path = Path(log_dir) / f"{model_name}-{dataset_name}.log"
+    logger = logging.getLogger(my_logger)
+    logger.setLevel(logging.DEBUG)
+
+    # file handler
+    fh = logging.FileHandler(log_file_path)
+    fh_formatter = logging.Formatter('%(asctime)s - %(name)s [%(levelname)s] - %(message)s')
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fh_formatter)
+    logger.addHandler(fh)
+
+    # stream handler
+    stream_level = {0: logging.ERROR, 1: logging.INFO, 2: logging.DEBUG}
+    ch = logging.StreamHandler()
+    ch.setLevel(stream_level[verbose_level])
+    ch_formatter = logging.Formatter('%(name)s - %(message)s')
+    ch.setFormatter(ch_formatter)
+    logger.addHandler(ch)
+
+    return logger
+
 
 def visual(true, preds=None, name='./pic/test.pdf'):
     """
@@ -117,6 +140,9 @@ def visual(true, preds=None, name='./pic/test.pdf'):
     plt.legend()
     plt.savefig(name, bbox_inches='tight')
 
+def serializable_parts_of_dict(d):
+    serializable_dict = {k: v for k, v in d.items() if is_json_serializable(v)}
+    return serializable_dict
 
 def adjustment(gt, pred):
     anomaly_state = False

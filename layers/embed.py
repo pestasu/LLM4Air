@@ -54,6 +54,7 @@ class PositionalEmbedding(nn.Module):
         return self.pe[:, :x.size(1)]
 
 
+
 class TokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
         super(TokenEmbedding, self).__init__()
@@ -66,9 +67,9 @@ class TokenEmbedding(nn.Module):
                     m.weight, mode='fan_in', nonlinearity='leaky_relu')
 
     def forward(self, x):
-        x = x.to(torch.float32)  # 确保输入张量为 float32 类型
         x = self.tokenConv(x.permute(0, 2, 1)).transpose(1, 2)
         return x
+
 
 
 class FixedEmbedding(nn.Module):
@@ -191,7 +192,8 @@ class PatchEmbedding(nn.Module):
         # Patching
         self.patch_len = patch_len
         self.stride = stride
-        self.padding_patch_layer = ReplicationPad1d((0, stride))
+        # self.padding_patch_layer = ReplicationPad1d((0, stride))
+        self.padding_patch_layer = nn.ReplicationPad1d((0, stride))
 
         # Backbone, Input encoding: projection of feature vectors onto a d-dim vector space
         self.value_embedding = TokenEmbedding(patch_len, d_model)
@@ -209,7 +211,7 @@ class PatchEmbedding(nn.Module):
         x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)
         x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
         # Input encoding
-        x = self.value_embedding(x)
+        x = self.value_embedding(x) #+ self.position_embedding(x)
         return self.dropout(x), n_vars
 
 

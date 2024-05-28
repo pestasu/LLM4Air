@@ -207,7 +207,8 @@ class TimeLLM(nn.Module):
  
         x_enc = x_enc.permute(0, 2, 1).contiguous()
         # ipdb.set_trace()
-        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 补丁嵌入
+        # enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 补丁嵌入
+        enc_out, n_vars = self.patch_embedding(x_enc)
         # ipdb.set_trace()
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings) # 重新编程
         llama_enc_out = torch.cat([prompt_embeddings, enc_out], dim=1)

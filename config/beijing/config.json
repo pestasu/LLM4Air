@@ -59,7 +59,7 @@
             "patience": 5,
             "pred_step":24,
             "patch_len":8,
-            "stride":4,
+            "stride":2,
             "enc_in":10,
             "seq_len": 24,
             "pred_len": 24,

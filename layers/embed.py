@@ -143,7 +143,7 @@ class DataEmbedding(nn.Module):
 
     def forward(self, x, x_mark):
         if x_mark is None:
-            x = self.value_embedding(x) + self.position_embedding(x).to(x.device)
+            x = self.value_embedding(x) + self.position_embedding(x)
         else:
             x = self.value_embedding(
                 x) + self.temporal_embedding(x_mark) + self.position_embedding(x)

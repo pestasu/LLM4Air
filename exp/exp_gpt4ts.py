@@ -20,16 +20,11 @@ warnings.filterwarnings('ignore')
 my_logger = 'lazy'
 logger = logging.getLogger(my_logger)
 
-class Exp_airformer(Exp_Basic):
+class Exp_gpt4ts(Exp_Basic):
     def __init__(self, args, ii):
-        super(Exp_airformer, self).__init__(args)
+        super(Exp_gpt4ts, self).__init__(args)
         self.cur_exp = ii
         self.rec_mae = nn.L1Loss()
-
-        self.alpha = args.alpha
-        _, _, adj_mat = graph.load_graph_data(f'{self.data_floder}/adj_mx_air.pkl')
-        filter_type = 'doubletransition'
-        self.supports = self.calculate_supports(adj_mat, filter_type)
 
     def build_model(self):
         model = self.model_dict[self.model_name].Model(self.args).float()
@@ -48,32 +43,6 @@ class Exp_airformer(Exp_Basic):
         logger.info(f'Early stop at epoch {epoch}, loss = {best_loss:.6f}')
         np.savetxt(os.path.join(self.pt_dir, f'val_loss_{self.cur_exp}.txt'), [best_loss], fmt='%.4f', delimiter=',')
 
-    def calculate_supports(self, adj_mat, filter_type):
-        # For GNNs, not for AirFormer
-        num_nodes = adj_mat.shape[0]
-        new_adj = adj_mat + np.eye(num_nodes)
-
-        if filter_type == "scalap": # 缩放的标准化的拉普拉斯邻接矩阵
-            supports = [graph.calculate_scaled_laplacian(
-                new_adj).todense()]
-        elif filter_type == "normlap": # 标准化的拉普拉斯邻接矩阵
-            supports = [graph.calculate_normalized_laplacian(
-                new_adj).astype(np.float32).todense()]
-        elif filter_type == "symnadj": # 对称标准化的邻接矩阵
-            supports = [graph.sym_adj(new_adj)]
-        elif filter_type == "transition": # 非对称标准化的邻接矩阵
-            supports = [graph.asym_adj(new_adj)]
-        elif filter_type == "doubletransition": # 原始图和转置图的非对称标准化的邻接矩阵
-            supports = [graph.asym_adj(new_adj),
-                        graph.asym_adj(np.transpose(new_adj))]
-        elif filter_type == "identity": # 对角矩阵
-            supports = [np.diag(np.ones(new_adj.shape[0])).astype(np.float32)]
-        else:
-            error = 0
-            assert error, "adj type not defined"
-        supports = [torch.tensor(i).cuda() for i in supports]
-        return supports
-
     def train_batch(self, x, y):
         '''
         the training process of a batch
@@ -82,19 +51,22 @@ class Exp_airformer(Exp_Basic):
         x = x.to(self.device)
         y = y.to(self.device)
 
-        outputs = self.model(x, self.supports)
-        pred, true = self._inverse_transform([outputs['pred'], y])
-        pred_loss = self.loss_fn(pred, true) 
-        rec_loss = self.rec_mae(outputs['rec'][..., :6], x[..., :6]) # only reconstructing air quality-related attributes
-        kl_loss = outputs['kl']
-        loss = pred_loss + self.alpha * (rec_loss + kl_loss)
+        # decoder input
+        dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.device)
+        dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
-        loss.backward()
+        outputs = self.model(x, None, dec_inp, None)
+
+        pred, true = self._inverse_transform([outputs, y])
+        loss = self.loss_fn(pred, true) 
+
+        # loss.backward()
+        self.accelerator.backward(loss)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(),
                                     max_norm=self.max_grad_norm)
         self.optimizer.step()
 
-        return loss.item(), pred_loss.item(), rec_loss.item(), kl_loss.item()
+        return loss.item()
 
     def train(self, setting):
         train_steps = len(self.dataloader['train'])
@@ -114,7 +86,7 @@ class Exp_airformer(Exp_Basic):
 
             iter_count = 0
             self.saved_epoch = -1
-            train_losses, pred_losses, rec_losses, kl_losses = [], [], [], []
+            train_losses, pred_losses, rec_losses= [], [], []
             self.val_losses = [np.inf]
 
             if epoch - self.saved_epoch > self.patience:
@@ -125,11 +97,8 @@ class Exp_airformer(Exp_Basic):
             start_time = time.time()
             for i, (batch_x, batch_y) in enumerate(self.dataloader['train']):
                 iter_count += 1
-                loss, pred_loss, rec_loss, kl_loss = self.train_batch(batch_x, batch_y)
+                loss = self.train_batch(batch_x, batch_y)
                 train_losses.append(loss)
-                pred_losses.append(pred_loss)
-                rec_losses.append(rec_loss)
-                kl_losses.append(kl_loss)
 
                 if (i + 1) % 100 == 0:
                     logger.info(f'\titers: {i+1}, epoch: {epoch+1} | loss: {loss:.7f}')
@@ -141,7 +110,7 @@ class Exp_airformer(Exp_Basic):
 
                 if iter_count % self.save_iter == 0:
                     val_loss, _ = self.valid(epoch)
-                    logger.info(f'Epoch [{epoch}/{self.train_epochs}]({iter_count}) | val_mae:{val_loss:.4f} | train_loss:{np.mean(train_losses):.4f}, train_mae:{np.mean(pred_losses):.4f}, train_rec:{np.mean(rec_losses):.4f}, train_kl:{np.mean(kl_losses):.4f}')
+                    logger.info(f'Epoch [{epoch}/{self.train_epochs}]({iter_count}) | val_mae:{val_loss:.4f} | train_mae:{np.mean(train_losses):.4f}')
             
             end_time = time.time()
             logger.info(f'{epoch}-epoch complete')
@@ -162,16 +131,20 @@ class Exp_airformer(Exp_Basic):
         total_time = 0
         with torch.no_grad():
             for i, (batch_x, batch_y) in enumerate(self.dataloader['valid']):
-                batch_x = batch_x.to(self.device)
-                batch_y = batch_y.to(self.device)
+                x = batch_x.to(self.device)
+                y = batch_y.to(self.device)
 
                 time_now = time.time()
-                
-                outputs = self.model(batch_x)
+
+                # decoder input
+                dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.device)
+                dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+
+                outputs = self.model(x, None, dec_inp, None)
 
                 total_time += time.time() - time_now
 
-                pred, true = self._inverse_transform([outputs['pred'], batch_y])
+                pred, true = self._inverse_transform([outputs, batch_y])
 
                 preds.append(pred.cpu())
                 trues.append(true.cpu())
@@ -246,6 +219,5 @@ class Exp_airformer(Exp_Basic):
         results.iloc[3, 1:] = [mae_sc, rmse_sc]
         logger.info(f'***** Sudden Changes MAE: {mae_sc:.4f}, Test RMSE: {rmse_sc:.4f} *****')
 
-        # results.to_csv(os.path.join(self.pt_dir, f'metrics_{self.cur_exp}.csv'), index = False)
-        results.to_csv(os.path.join(folder_path, f'metrics_{self.cur_exp}.csv'), index = False)
+        results.to_csv(os.path.join(self.pt_dir, f'metrics_{self.cur_exp}.csv'), index = False)
 

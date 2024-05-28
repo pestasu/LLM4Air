@@ -1,5 +1,5 @@
 python -u main.py --is_training 1 \
 --model "timellm" \
---data "beijing" \
+--data "london" \
 --version 0 \
 --gpu "0" 

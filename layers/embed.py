@@ -53,8 +53,6 @@ class PositionalEmbedding(nn.Module):
     def forward(self, x):
         return self.pe[:, :x.size(1)]
 
-
-
 class TokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
         super(TokenEmbedding, self).__init__()
@@ -67,10 +65,9 @@ class TokenEmbedding(nn.Module):
                     m.weight, mode='fan_in', nonlinearity='leaky_relu')
 
     def forward(self, x):
+        x = x.to(self.tokenConv.weight.dtype)
         x = self.tokenConv(x.permute(0, 2, 1)).transpose(1, 2)
         return x
-
-
 
 class FixedEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
@@ -91,7 +88,6 @@ class FixedEmbedding(nn.Module):
 
     def forward(self, x):
         return self.emb(x).detach()
-
 
 class TemporalEmbedding(nn.Module):
     def __init__(self, d_model, embed_type='fixed', freq='h'):
@@ -122,7 +118,6 @@ class TemporalEmbedding(nn.Module):
 
         return hour_x + weekday_x + day_x + month_x + minute_x
 
-
 class TimeFeatureEmbedding(nn.Module):
     def __init__(self, d_model, embed_type='timeF', freq='h'):
         super(TimeFeatureEmbedding, self).__init__()
@@ -134,7 +129,6 @@ class TimeFeatureEmbedding(nn.Module):
 
     def forward(self, x):
         return self.embed(x)
-
 
 class DataEmbedding(nn.Module):
     def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
@@ -155,7 +149,6 @@ class DataEmbedding(nn.Module):
                 x) + self.temporal_embedding(x_mark) + self.position_embedding(x)
         return self.dropout(x)
 
-
 class DataEmbedding_wo_pos(nn.Module):
     def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
         super(DataEmbedding_wo_pos, self).__init__()
@@ -174,7 +167,6 @@ class DataEmbedding_wo_pos(nn.Module):
             x = self.value_embedding(x) + self.temporal_embedding(x_mark)
         return self.dropout(x)
 
-
 class ReplicationPad1d(nn.Module):
     def __init__(self, padding) -> None:
         super(ReplicationPad1d, self).__init__()
@@ -184,7 +176,6 @@ class ReplicationPad1d(nn.Module):
         replicate_padding = input[:, :, -1].unsqueeze(-1).repeat(1, 1, self.padding[-1])
         output = torch.cat([input, replicate_padding], dim=-1)
         return output
-
 
 class PatchEmbedding(nn.Module):
     def __init__(self, d_model, patch_len, stride, dropout):
@@ -213,7 +204,6 @@ class PatchEmbedding(nn.Module):
         # Input encoding
         x = self.value_embedding(x) #+ self.position_embedding(x)
         return self.dropout(x), n_vars
-
 
 class DataEmbedding_wo_time(nn.Module):
     def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):

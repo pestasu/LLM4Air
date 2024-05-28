@@ -1,14 +1,17 @@
+import os
 from math import sqrt
 import ipdb
 import torch
 import torch.nn as nn
-
+from torch.utils.checkpoint import checkpoint
 from transformers import LlamaConfig, LlamaModel, LlamaTokenizer
 
 from layers.embed import PatchEmbedding
 
 import transformers
 transformers.logging.set_verbosity_error()
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
 class Normalize(nn.Module):
     def __init__(self, num_features: int, eps=1e-5, affine=False, subtract_last=False, non_norm=False):
@@ -106,8 +109,8 @@ class TimeLLM(nn.Module):
         self.llama_config = LlamaConfig.from_pretrained('pretrained_model/meta-llama/Llama-2-7b-hf/')
         # self.llama_config = LlamaConfig.from_pretrained('huggyllama/llama-7b')
         self.llama_config.num_hidden_layers = configs.llm_layers # 设置 Llama 模型的隐藏层数
-        self.llama_config.output_attentions = True # 输出注意力权重
-        self.llama_config.output_hidden_states = True # 输出隐藏状态
+        self.llama_config.output_attentions = False # 输出注意力权重
+        self.llama_config.output_hidden_states = False # 输出隐藏状态
         
         # 加载预训练的 Llama 模型
         self.llama = LlamaModel.from_pretrained(
@@ -212,6 +215,9 @@ class TimeLLM(nn.Module):
         # ipdb.set_trace()
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings) # 重新编程
         llama_enc_out = torch.cat([prompt_embeddings, enc_out], dim=1)
+
+        torch.cuda.empty_cache()
+        llama_enc_out = llama_enc_out.to(torch.float16)
         dec_out = self.llama(inputs_embeds=llama_enc_out).last_hidden_state
         dec_out = dec_out[:, :, :self.d_ff]
         dec_out = torch.reshape(

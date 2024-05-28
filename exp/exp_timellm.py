@@ -25,6 +25,13 @@ class Exp_timellm(Exp_Basic):
         super(Exp_timellm, self).__init__(args)
         self.cur_exp = ii
         self.rec_mae = nn.L1Loss()
+        # self.dataloader = self._get_data()
+
+    def _get_data(self):
+        dataloader, scalers = get_dataloader(self.args, need_location=False)
+        self.scaler = StandardScaler(scalers[0], scalers[1])
+        return dataloader
+
 
     def build_model(self):
         model = self.model_dict[self.model_name].Model(self.args).float()

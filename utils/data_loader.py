@@ -36,7 +36,7 @@ class get_dataset(Dataset):
 
     def __read_data__(self, mode):
         data = np.load(os.path.join(self.data_root_path, self.data_path, mode+'.npz'))
-        self.x = data['x'].transpose(1, 0, 2, 3)
+        self.x = data['x'].transpose(1, 0, 2, 3) # num_samples, num_station, seq_len, num_features
         self.y = data['y'][..., :1].transpose(1, 0, 2, 3)
         if mode == 'train':
             self.scaler = data['scaler']
@@ -47,13 +47,37 @@ class get_dataset(Dataset):
     def __len__(self):
         return len(self.x) - self.seq_len - self.pred_len + 1
 
+class get_dataset_time(Dataset):
+    def __init__(self, args, mode='train'):
+        self.seq_len = args.seq_len
+        self.pred_len = args.pred_len
+        self.data_root_path = args.data_root_path
+        self.data_path = args.data_path
 
-def get_dataloader(args):
+        self.__read_data__(mode) 
 
+    def __read_data__(self, mode):
+        data = np.load(os.path.join(self.data_root_path, self.data_path, mode+'.npz'))
+        num_station, num_samples, seq_len, num_features = data['x'].shape
+        self.x = data['x'].reshape(num_station * num_samples, seq_len, num_features)
+        self.y = data['y'].reshape(num_station * num_samples, -1, num_features)[..., :1]
+        if mode == 'train':
+            self.scaler = data['scaler']
+        
+    def __getitem__(self, index):
+        return torch.Tensor(self.x[index]), torch.Tensor(self.y[index])
+
+    def __len__(self):
+        return len(self.x) - self.seq_len - self.pred_len + 1
+
+def get_dataloader(args, need_location=True):
+
+    get_dataset_fuc = get_dataset if need_location else get_dataset_time
+    
     datasets = {
-        'train': get_dataset(args, mode='train'),
-        'valid': get_dataset(args, mode='valid'),
-        'test': get_dataset(args, mode='test')
+        'train': get_dataset_fuc(args, mode='train'),
+        'valid': get_dataset_fuc(args, mode='valid'),
+        'test': get_dataset_fuc(args, mode='test')
     }
 
     scalers = datasets['train'].scaler

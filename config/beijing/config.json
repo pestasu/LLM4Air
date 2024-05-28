@@ -52,7 +52,7 @@
             "group_num":15
         },
         "timellm": {
-            "batch_size": 1,
+            "batch_size": 10,
             "learning_rate": 1e-3,
             "weight_decay": 0.0,
             "grad_clip": 0.6,
@@ -71,7 +71,7 @@
             "dropout":0.1
         },
         "gpt4ts": {
-            "batch_size": 1,
+            "batch_size": 32,
             "learning_rate": 1e-3,
             "weight_decay": 0.0,
             "grad_clip": 0.6,

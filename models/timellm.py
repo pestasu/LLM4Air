@@ -170,19 +170,17 @@ class TimeLLM(nn.Module):
 
     def forecast(self, x_enc=None, x_mark_enc=None, x_dec=None, x_mark_dec=None):
         x_enc = x_enc[..., :self.enc_in]
-        B, N, T, C = x_enc.size()
-        x_enc = x_enc.reshape(B * N, T, C)
+        B, T, C = x_enc.size()
         x_enc = self.normalize_layers(x_enc, 'norm')
 
         B, T, C = x_enc.size()
-        x_enc = x_enc.permute(0, 2, 1).contiguous().reshape(B * C, T, 1)
+        # x_enc = x_enc.permute(0, 2, 1).contiguous().reshape(B * C, T, 1)
 
-
-        min_values = torch.min(x_enc, dim=1)[0]
-        max_values = torch.max(x_enc, dim=1)[0]
-        medians = torch.median(x_enc, dim=1).values
-        lags = self.calcute_lags(x_enc)
-        trends = x_enc.diff(dim=1).sum(dim=1) # 计算差分+求和
+        min_values = torch.min(x_enc[..., :1], dim=1)[0]
+        max_values = torch.max(x_enc[..., :1], dim=1)[0]
+        medians = torch.median(x_enc[..., :1], dim=1).values
+        lags = self.calcute_lags(x_enc[..., :1])
+        trends = x_enc[..., :1].diff(dim=1).sum(dim=1) # 计算差分+求和
         prompt = [] # 构建prompt
         for b in range(x_enc.shape[0]):
             min_values_str = str(min_values[b].tolist()[0])
@@ -190,8 +188,8 @@ class TimeLLM(nn.Module):
             median_values_str = str(medians[b].tolist()[0])
             lags_values_str = str(lags[b].tolist())
             prompt_ = (
-                f"<|start_prompt|>Dataset description: The Electricity Transformer Temperature (ETT) is a crucial indicator in the electric power long-term deployment."
-                f"Task description: forecast the next {str(self.pred_len)} steps given the previous {str(self.seq_len)} steps information; "
+                f"<|start_prompt|>Dataset description: Particulate matter 2.5 (PM2.5) prediction using air qulaity data and weather data."
+                f"Task description: forecast the next {str(self.pred_len)} steps PM2.5 given the previous {str(self.seq_len)} steps air quality and weather data; "
                 "Input statistics: "
                 f"min value {min_values_str}, "
                 f"max value {max_values_str}, "
@@ -202,19 +200,22 @@ class TimeLLM(nn.Module):
 
             prompt.append(prompt_)
 
-        x_enc = x_enc.reshape(B, C, T).permute(0, 2, 1).contiguous()
+        # x_enc = x_enc.reshape(B, C, T).permute(0, 2, 1).contiguous()
+
         prompt = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=2048).input_ids.to(x_enc.device) # prompt转换为pytorch张量，并填充和阶段->max_length
+        
         prompt_embeddings = self.llama.get_input_embeddings()(prompt)  # (batch, prompt_token, dim) 嵌入向量
-    
+
         source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0) # 重新映射词嵌入
- 
+
         x_enc = x_enc.permute(0, 2, 1).contiguous()
         # ipdb.set_trace()
         # enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 补丁嵌入
         enc_out, n_vars = self.patch_embedding(x_enc)
-        # ipdb.set_trace()
+        ipdb.set_trace()
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings) # 重新编程
-        llama_enc_out = torch.cat([prompt_embeddings, enc_out], dim=1)
+        prompt_embeddings2 = prompt_embeddings.unsqueeze(1).repeat(1, C, 1, 1).reshape(B * C, -1, self.d_llm)
+        llama_enc_out = torch.cat([prompt_embeddings2, enc_out], dim=1)
 
         torch.cuda.empty_cache()
         llama_enc_out = llama_enc_out.to(torch.float16)

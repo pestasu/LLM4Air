@@ -35,6 +35,7 @@ class Exp_Basic(object):
             # spatial-temporal
             'airformer': Airformer,
             'gagnn': Gagnn,
+            'gpt_st': Gpt_ST,
             # LLM
             'timellm': TimeLLM,
             'autoTimes': AutoTimes,
@@ -47,7 +48,7 @@ class Exp_Basic(object):
         self.model = self._build_model()
         self.dataloader = self._get_data()
         self.optimizer = self._select_optimizer()
-        self.loss_fn = self._select_criterion(mask=True)
+        self.loss_fn = self._select_criterion()
 
     def _build_model(self): 
         return self.model_dict[self.model_name](self.args).to(self.device)
@@ -81,11 +82,15 @@ class Exp_Basic(object):
         model_optim = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         return model_optim
 
-    def _select_criterion(self, mask=False):
-        if mask:
+    def _select_criterion(self, metric_func='mask_mae'):
+        if metric_func == 'mask_mae':
             return masked_mae
+        elif metric_func == 'mae':
+            return torch.nn.L1Loss()
+        elif metric_func == 'mse':
+            return torch.nn.MSELoss()
         else:
-            return nn.MSELoss()
+            raise ValueError
 
     def train(self):
         pass

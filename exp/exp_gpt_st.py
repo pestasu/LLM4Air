@@ -20,17 +20,16 @@ warnings.filterwarnings('ignore')
 my_logger = 'lazy'
 logger = logging.getLogger(my_logger)
 
-class Exp_gpt4ts(Exp_Basic):
+class Exp_gpt_st(Exp_Basic):
     def __init__(self, args, ii):
-        super(Exp_gpt4ts, self).__init__(args)
+        super(Exp_gpt_st, self).__init__(args)
         self.cur_exp = ii
-        # self.loss_fn = self._select_criterion(metric_func='mse')
+        self.mode = args.mode
+        self.batch_seen = 0
+        self.change_epoch = args.change_epoch
+        self.loss_fn = self._select_criterion()
+        self.loss_kl = nn.KLDivLoss(reduction='sum')
 
-    def _get_data(self):
-        dataloader, scalers = get_dataloader(self.args, need_location=False)
-        self.scaler = StandardScaler(scalers[0], scalers[1])
-        return dataloader
-        
     def build_model(self):
         model = self.model_dict[self.model_name].Model(self.args).float()
 
@@ -48,22 +47,29 @@ class Exp_gpt4ts(Exp_Basic):
         logger.info(f'Early stop at epoch {epoch}, loss = {best_loss:.6f}')
         np.savetxt(os.path.join(self.pt_dir, f'val_loss_{self.cur_exp}.txt'), [best_loss], fmt='%.4f', delimiter=',')
 
-    def train_batch(self, x, y):
+    def train_batch(self, x, y, epoch):
         '''
         the training process of a batch
         '''   
+        self.batch_seen += 1
+
         self.optimizer.zero_grad()
         x = x.to(self.device)
         y = y.to(self.device)
 
-        # decoder input
-        dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.device)
-        dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
-
-        outputs = self.model(x, None, dec_inp, None)
-
-        pred, true = self._inverse_transform([outputs, y])
-        loss = self.loss_fn(pred, true) 
+        if self.mode == 'pretrain':
+                out, out_time, mask, probability, eb = self.model(x, y, self.batch_seen, epoch)
+                pred, true = self._inverse_transform([out, y])
+                loss_flow, loss_base = self.loss_fn(pred, true, mask)
+                if epoch > self.change_epoch :
+                    loss_s = self.loss_kl(probability.log(), eb) * 0.1
+                    loss = loss_flow + loss_s
+                else:
+                    loss = loss_flow
+        else:
+            out, out_time, mask, probability, eb2 = self.model(x, y, self.batch_seen)
+            pred, true = self._inverse_transform([out, y])
+            loss, _ = self.loss(pred, true)
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(),
@@ -90,17 +96,18 @@ class Exp_gpt4ts(Exp_Basic):
 
             iter_count = 0
             self.saved_epoch = -1
-            train_losses, pred_losses, rec_losses= [], [], []
+            train_losses = []
+            self.val_losses = [np.inf]
 
             if epoch - self.saved_epoch > self.patience:
                 self.early_stop(epoch, min(self.val_losses))
                 break
-            self.val_losses = [np.inf]
+
             logger.info('------start training!------')
             start_time = time.time()
             for i, (batch_x, batch_y) in enumerate(self.dataloader['train']):
                 iter_count += 1
-                loss = self.train_batch(batch_x, batch_y)
+                loss = self.train_batch(batch_x, batch_y, epoch)
                 train_losses.append(loss)
 
                 if (i + 1) % 100 == 0:
@@ -113,7 +120,7 @@ class Exp_gpt4ts(Exp_Basic):
 
                 if iter_count % self.save_iter == 0:
                     val_loss, _ = self.valid(epoch)
-                    logger.info(f'Epoch [{epoch}/{self.train_epochs}]({iter_count}) | val_mae:{val_loss:.4f} | train_mae:{np.mean(train_losses):.4f}')
+                    logger.info(f'Epoch [{epoch}/{self.train_epochs}]({iter_count}) | val_mae:{val_loss:.4f} | train_loss:{np.mean(train_losses):.4f}')
             
             end_time = time.time()
             logger.info(f'{epoch}-epoch complete')
@@ -134,16 +141,12 @@ class Exp_gpt4ts(Exp_Basic):
         total_time = 0
         with torch.no_grad():
             for i, (batch_x, batch_y) in enumerate(self.dataloader['valid']):
-                x = batch_x.to(self.device)
-                y = batch_y.to(self.device)
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device)
 
                 time_now = time.time()
-
-                # decoder input
-                dec_inp = torch.zeros_like(y[:, -self.args.pred_len:, :]).float().to(self.device)
-                dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
-
-                outputs = self.model(x, None, dec_inp, None)
+                
+                output, _, mask, _, _ = self.model(batch_x, label=None)
 
                 total_time += time.time() - time_now
 
@@ -154,7 +157,11 @@ class Exp_gpt4ts(Exp_Basic):
 
         preds = torch.cat(preds, dim=0)
         trues = torch.cat(trues, dim=0)
-        val_loss = self.loss_fn(preds, trues)
+
+        if self.mode == 'pretrain':
+            val_loss, val_loss_base = self.loss_fn(pred, true, mask)
+        else:
+            val_loss, _ = self.loss_fn(pred, true)
         
         if val_loss < np.min(self.val_losses):
             saved_model_file = self._save_model(self.pt_dir, self.cur_exp)
@@ -182,11 +189,16 @@ class Exp_gpt4ts(Exp_Basic):
                 batch_x = batch_x.to(self.device)
                 batch_y = batch_y.to(self.device)
 
-                outputs = self.model(batch_x)
-                pred, true = self._inverse_transform([outputs, batch_y])
-                ipdb.set_trace()
-                preds.append(pred.cpu())
-                trues.append(true.cpu())
+                if self.mode == 'pretrain':
+                    output, _, mask, _, _ = self.model(batch_x, None, None, self.args.train_epochs)
+                    pred, true = self._inverse_transform([output, batch_y])
+                    trues.append((true*mask).cpu())
+                    preds.append((pred*mask).cpu())
+                else:
+                    output, _, mask, _, _ = self.model(batch_x, label=None)
+                    pred, true = self._inverse_transform([output, batch_y])
+                    preds.append(pred.cpu())
+                    trues.append(true.cpu())
                 
         preds = torch.cat(preds, dim=0)
         trues = torch.cat(trues, dim=0)
@@ -215,10 +227,8 @@ class Exp_gpt4ts(Exp_Basic):
                 results.iloc[i, 2]= rmse_day[i]
         else:
             print('The output length is not 24!!!')
-        datapath = self.data_floder + './mask_sudden_change_times/'
-        if not os.path.exists(datapath):
-            os.makedirs(datapath)
-        mask_sudden_change = metrics.sudden_changes_mask_times(trues, datapath=datapath, null_val=0.0, threshold_start=75, threshold_change=20)
+
+        mask_sudden_change = metrics.sudden_changes_mask(trues, datapath=self.data_floder, null_val=0.0, threshold_start=75, threshold_change=20)
         results.iloc[3, 0] = Time_list[3]
         mae_sc, rmse_sc = metrics.compute_sudden_change(mask_sudden_change, preds, trues, null_value=0.0)
         results.iloc[3, 1:] = [mae_sc, rmse_sc]

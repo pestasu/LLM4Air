@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import os
 
+
 def masked_mse(preds, labels, null_val = 0.0, mask = None): # np.nan
     '''
     Calculate MSE.
@@ -50,6 +51,33 @@ def compute_all_metrics(pred, real, null_value =np.nan):
     mae = masked_mae(pred, real, null_value).item()
     rmse = masked_rmse(pred, real, null_value).item()
     return mae, rmse
+
+def sudden_changes_mask_times(labels, datapath, null_val = np.nan, threshold_start = 75, threshold_change = 20):
+    '''
+    Create the mask for sudden change case.
+    The parameter 'threshold_start' and 'threshold_change' can be changed.
+    '''
+    path = os.path.join(datapath, 'mask_sudden_change_{}_{}.pth'.format(threshold_start, threshold_change))
+    if os.path.exists(path):
+        mask = torch.load(path)
+    else:
+        labels = labels.squeeze(-1)
+        b, t = labels.shape
+        mask = torch.zeros(size = (b, t))
+        mask_ones = torch.ones(size = (b,))
+        mask_zeros = torch.zeros(size = (b,))
+        for t in range(1, 24):
+            prev = labels[:, t-1]
+            curr = labels[:, t]
+            mask[:, t] = torch.where((torch.BoolTensor(curr > threshold_start)), mask_ones, mask[:, t]) 
+            mask[:, t] = torch.where(torch.abs(torch.Tensor(curr - prev))> threshold_change, mask_ones, mask[:, t])
+            if not np.isnan(null_val):
+                mask[:, t] = torch.where(torch.BoolTensor(prev < null_val + 0.1), mask_zeros, mask[:, t])
+            else:
+                mask[:, t] = torch.where(torch.isnan(curr), mask_zeros, mask[:, t])
+        mask = mask.unsqueeze(-1)
+        torch.save(mask, path)
+    return mask
 
 def sudden_changes_mask(labels, datapath, null_val = np.nan, threshold_start = 75, threshold_change = 20):
     '''

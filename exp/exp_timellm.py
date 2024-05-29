@@ -25,7 +25,6 @@ class Exp_timellm(Exp_Basic):
         super(Exp_timellm, self).__init__(args)
         self.cur_exp = ii
         self.rec_mae = nn.L1Loss()
-        # self.dataloader = self._get_data()
 
     def _get_data(self):
         dataloader, scalers = get_dataloader(self.args, need_location=False)
@@ -63,7 +62,6 @@ class Exp_timellm(Exp_Basic):
         dec_inp = torch.cat([y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
         outputs = self.model(x, None, dec_inp, None)
-
         pred, true = self._inverse_transform([outputs, y])
         loss = self.loss_fn(pred, true) 
 
@@ -196,11 +194,11 @@ class Exp_timellm(Exp_Basic):
         trues = torch.cat(trues, dim=0)
 
 
-        if self.model.horizon == 24: 
+        if self.horizon == 24: 
             mae_day = []
             rmse_day = []
 
-            for i in range(0, self.model.horizon, 8):
+            for i in range(0, self.horizon, 8):
                 pred = preds[:, i: i + 8]
                 true = trues[:, i: i + 8]
                 result = metrics.compute_all_metrics(pred, true, 0.0)
@@ -220,11 +218,15 @@ class Exp_timellm(Exp_Basic):
         else:
             print('The output length is not 24!!!')
 
-        mask_sudden_change = metrics.sudden_changes_mask(trues, datapath=self.data_floder, null_val=0.0, threshold_start=75, threshold_change=20)
+        datapath = self.data_floder + './mask_sudden_change_times/'
+        if not os.path.exists(datapath):
+            os.makedirs(datapath)
+        mask_sudden_change = metrics.sudden_changes_mask_times(trues, datapath=datapath, null_val=0.0, threshold_start=75, threshold_change=20)
         results.iloc[3, 0] = Time_list[3]
         mae_sc, rmse_sc = metrics.compute_sudden_change(mask_sudden_change, preds, trues, null_value=0.0)
         results.iloc[3, 1:] = [mae_sc, rmse_sc]
         logger.info(f'***** Sudden Changes MAE: {mae_sc:.4f}, Test RMSE: {rmse_sc:.4f} *****')
 
+        # results.to_csv(os.path.join(folder_path, f'metrics_{self.cur_exp}.csv'), index = False)
         results.to_csv(os.path.join(self.pt_dir, f'metrics_{self.cur_exp}.csv'), index = False)
 

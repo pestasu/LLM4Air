@@ -93,7 +93,6 @@ class FlattenHead(nn.Module):
         return x
 
 class TimeLLM(nn.Module):
-
     def __init__(self, configs):
         super(TimeLLM, self).__init__()
         self.pred_len = configs.pred_len
@@ -104,6 +103,7 @@ class TimeLLM(nn.Module):
         self.patch_len = configs.patch_len
         self.stride = configs.stride
         self.enc_in = configs.enc_in
+        self.c_out = configs.c_out
 
         # 加载预训练的 Llama 配置 
         self.llama_config = LlamaConfig.from_pretrained('pretrained_model/meta-llama/Llama-2-7b-hf/')
@@ -176,11 +176,11 @@ class TimeLLM(nn.Module):
         B, T, C = x_enc.size()
         # x_enc = x_enc.permute(0, 2, 1).contiguous().reshape(B * C, T, 1)
 
-        min_values = torch.min(x_enc[..., :1], dim=1)[0]
-        max_values = torch.max(x_enc[..., :1], dim=1)[0]
-        medians = torch.median(x_enc[..., :1], dim=1).values
-        lags = self.calcute_lags(x_enc[..., :1])
-        trends = x_enc[..., :1].diff(dim=1).sum(dim=1) # 计算差分+求和
+        min_values = torch.min(x_enc[..., :self.c_out], dim=1)[0]
+        max_values = torch.max(x_enc[..., :self.c_out], dim=1)[0]
+        medians = torch.median(x_enc[..., :self.c_out], dim=1).values
+        lags = self.calcute_lags(x_enc[..., :self.c_out])
+        trends = x_enc[..., :self.c_out].diff(dim=1).sum(dim=1) # 计算差分+求和
         prompt = [] # 构建prompt
         for b in range(x_enc.shape[0]):
             min_values_str = str(min_values[b].tolist()[0])
@@ -212,7 +212,6 @@ class TimeLLM(nn.Module):
         # ipdb.set_trace()
         # enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 补丁嵌入
         enc_out, n_vars = self.patch_embedding(x_enc)
-        ipdb.set_trace()
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings) # 重新编程
         prompt_embeddings2 = prompt_embeddings.unsqueeze(1).repeat(1, C, 1, 1).reshape(B * C, -1, self.d_llm)
         llama_enc_out = torch.cat([prompt_embeddings2, enc_out], dim=1)
@@ -220,16 +219,16 @@ class TimeLLM(nn.Module):
         torch.cuda.empty_cache()
         llama_enc_out = llama_enc_out.to(torch.float16)
         dec_out = self.llama(inputs_embeds=llama_enc_out).last_hidden_state
+
         dec_out = dec_out[:, :, :self.d_ff]
-        dec_out = torch.reshape(
-            dec_out, (-1, n_vars, dec_out.shape[-2], dec_out.shape[-1]))
+        dec_out = torch.reshape(dec_out, (-1, n_vars, dec_out.shape[-2], dec_out.shape[-1]))
         dec_out = dec_out.permute(0, 1, 3, 2).contiguous()
 
         dec_out = self.output_projection(dec_out[:, :, :, -self.patch_nums:])
         dec_out = dec_out.permute(0, 2, 1).contiguous()
 
         dec_out = self.normalize_layers(dec_out, 'denorm')
-
+        dec_out = dec_out[...,:self.c_out]
         return dec_out
 
     def calcute_lags(self, x_enc):

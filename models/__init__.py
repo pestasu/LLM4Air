@@ -1,5 +1,6 @@
 from models.airformer import Airformer
 from models.gagnn import Gagnn
+from models.gpt_st import Gpt_ST
 from models.test import Test
 from models.llm4air import LLM4Air
 from models.autotimes import AutoTimes

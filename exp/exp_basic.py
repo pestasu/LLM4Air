@@ -45,8 +45,8 @@ class Exp_Basic(object):
             # Ours
             'llm4air':LLM4Air,
         }
-        self.model = self._build_model()
         self.dataloader = self._get_data()
+        self.model = self._build_model()
         self.optimizer = self._select_optimizer()
         self.loss_fn = self._select_criterion()
 
@@ -85,6 +85,8 @@ class Exp_Basic(object):
     def _select_criterion(self, metric_func='mask_mae'):
         if metric_func == 'mask_mae':
             return masked_mae
+        elif metric_func == 'mask_mse':
+            return masked_mse
         elif metric_func == 'mae':
             return torch.nn.L1Loss()
         elif metric_func == 'mse':

@@ -2,6 +2,8 @@ import os
 import time
 import warnings
 import ipdb
+import json
+import pickle
 import numpy as np
 import pandas as pd
 import logging
@@ -9,6 +11,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 import matplotlib.pyplot as plt
+from easydict import EasyDict as edict
 
 from exp.exp_basic import Exp_Basic
 from utils import metrics, graph
@@ -25,27 +28,31 @@ class Exp_gpt_st(Exp_Basic):
         super(Exp_gpt_st, self).__init__(args)
         self.cur_exp = ii
         self.mode = args.mode
+        self.predict_model = args.predict_model
         self.batch_seen = 0
         self.change_epoch = args.change_epoch
         self.loss_fn = self._select_criterion()
         self.loss_kl = nn.KLDivLoss(reduction='sum')
 
-    def build_model(self):
-        model = self.model_dict[self.model_name].Model(self.args).float()
+    def _build_model(self): 
+        self.args.scaler_zeros = self.scaler.transform(0)
+        if self.args.mode == 'pretrain':
+            return Gpt_ST(self.args).to(self.device)
+        else:
+            args_file = f"models/predict_models/{self.args.predict_model}.json"
+            with open(args_file, 'r') as f:
+                args_predictor = json.load(f)
+            args_predictor = edict(args_predictor)
+            _, _, A = graph.load_graph_data(f'{self.data_floder}/adj_mx_air.pkl')
+            args_predictor.adj_mx = A
+            args_predictor.num_nodes = self.args.num_nodes
+            args_predictor.input_window = self.args.seq_len
+            args_predictor.output_window = self.args.pred_len
+            return Enhance_model(self.args, args_predictor).to(self.device)
 
-        if self.need_pt:
-            pt_model = torch.load(os.path.join(self.pt_dir, "final_model.pt"), map_location='cpu')
 
-            model_dict =  model.state_dict()
-            state_dict = {k:v for k,v in pt_model.items() if k in model_dict.keys()}
-
-            del pt_model
-            
-        return model
-    
     def early_stop(self, epoch, best_loss):
         logger.info(f'Early stop at epoch {epoch}, loss = {best_loss:.6f}')
-        np.savetxt(os.path.join(self.pt_dir, f'val_loss_{self.cur_exp}.txt'), [best_loss], fmt='%.4f', delimiter=',')
 
     def train_batch(self, x, y, epoch):
         '''
@@ -55,21 +62,22 @@ class Exp_gpt_st(Exp_Basic):
 
         self.optimizer.zero_grad()
         x = x.to(self.device)
-        y = y.to(self.device)
+        y = y[..., :1].to(self.device)
 
         if self.mode == 'pretrain':
-                out, out_time, mask, probability, eb = self.model(x, y, self.batch_seen, epoch)
-                pred, true = self._inverse_transform([out, y])
-                loss_flow, loss_base = self.loss_fn(pred, true, mask)
-                if epoch > self.change_epoch :
-                    loss_s = self.loss_kl(probability.log(), eb) * 0.1
-                    loss = loss_flow + loss_s
-                else:
-                    loss = loss_flow
+            out, out_time, mask, probability, eb = self.model(x, y, self.batch_seen, epoch)
+            y = x[..., :self.args.input_base_dim]
+            # pred, true = self._inverse_transform([out, y])
+            loss_flow = self.loss_fn(out, y, mask)
+            if epoch > self.change_epoch :
+                loss_s = self.loss_kl(probability.log(), eb) * 0.1
+                loss = loss_flow + loss_s
+            else:
+                loss = loss_flow
         else:
-            out, out_time, mask, probability, eb2 = self.model(x, y, self.batch_seen)
+            out, _, _, _, _ = self.model(x, y, self.batch_seen)
             pred, true = self._inverse_transform([out, y])
-            loss, _ = self.loss(pred, true)
+            loss = self.loss_fn(pred, true)
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(),
@@ -90,17 +98,18 @@ class Exp_gpt_st(Exp_Basic):
                                         epochs = self.train_epochs,
                                         max_lr = self.learning_rate)
 
+        self.saved_epoch = -1
+        self.val_losses = [np.inf]       
         time_now = time.time()
         for epoch in range(self.train_epochs):
             self.model.train()
 
             iter_count = 0
-            self.saved_epoch = -1
             train_losses = []
-            self.val_losses = [np.inf]
 
             if epoch - self.saved_epoch > self.patience:
                 self.early_stop(epoch, min(self.val_losses))
+                np.savetxt(os.path.join(self.pt_dir, f'val_loss_{self.cur_exp}.txt'), self.val_losses, fmt='%.4f', delimiter=',')
                 break
 
             logger.info('------start training!------')
@@ -127,7 +136,7 @@ class Exp_gpt_st(Exp_Basic):
             logger.info('------evaluating now!------')
 
             val_loss, val_time = self.valid(epoch)
-            logger.info(f'Epoch [{epoch}/{self.train_epochs}]({iter_count}) | val_mae:{val_loss:.4f} -> val_time:{val_time:.1f}s | train_mae:{np.mean(train_losses):.4f}')
+            logger.info(f'Epoch [{epoch}/{self.train_epochs}]({iter_count}) | val_mae:{val_loss:.4f}, val_time:{val_time:.1f}s | train_mae:{np.mean(train_losses):.4f}')
 
             if self.lr_adj == 'cosine':
                 scheduler.step()
@@ -136,21 +145,26 @@ class Exp_gpt_st(Exp_Basic):
                 adjust_learning_rate(self.optimizer, epoch+1, self.args)
 
     def valid(self, epoch):
-        preds, trues = [], []
+        preds, trues, masks = [], [], []
         self.model.eval()
         total_time = 0
         with torch.no_grad():
             for i, (batch_x, batch_y) in enumerate(self.dataloader['valid']):
                 batch_x = batch_x.to(self.device)
-                batch_y = batch_y.to(self.device)
+                batch_y = batch_y[..., :1].to(self.device)
 
                 time_now = time.time()
-                
-                output, _, mask, _, _ = self.model(batch_x, label=None)
+
+                if self.args.mode == 'pretrain':
+                    output, _, mask, _, _ = self.model(batch_x, label=None, epoch=self.args.train_epochs)
+                    true = batch_x[..., :self.args.input_base_dim]
+                    pred = output
+                    masks.append(mask.cpu())
+                else:
+                    output, _, _, _, _ = self.model(batch_x, label=None)
+                    pred, true = self._inverse_transform([output, batch_y])
 
                 total_time += time.time() - time_now
-
-                pred, true = self._inverse_transform([outputs, batch_y])
 
                 preds.append(pred.cpu())
                 trues.append(true.cpu())
@@ -159,9 +173,10 @@ class Exp_gpt_st(Exp_Basic):
         trues = torch.cat(trues, dim=0)
 
         if self.mode == 'pretrain':
-            val_loss, val_loss_base = self.loss_fn(pred, true, mask)
+            masks = torch.cat(masks, dim=0)
+            val_loss = self.loss_fn(preds, trues, masks)
         else:
-            val_loss, _ = self.loss_fn(pred, true)
+            val_loss = self.loss_fn(preds, trues)
         
         if val_loss < np.min(self.val_losses):
             saved_model_file = self._save_model(self.pt_dir, self.cur_exp)
@@ -173,8 +188,8 @@ class Exp_gpt_st(Exp_Basic):
         return val_loss, total_time
 
     def test(self, setting, is_test=False):
-        if test:
-            logger.info('------------Test process~load model------------')
+        if is_test:
+            logger.info(f'------------Test process~load model({self.args.model}-{self.args.version})------------')
             self._load_model(self.pt_dir, self.cur_exp)
 
         preds = []
@@ -187,15 +202,15 @@ class Exp_gpt_st(Exp_Basic):
         with torch.no_grad():
             for i, (batch_x, batch_y) in enumerate(self.dataloader['test']):
                 batch_x = batch_x.to(self.device)
-                batch_y = batch_y.to(self.device)
+                batch_y = batch_y[..., :1].to(self.device)
 
                 if self.mode == 'pretrain':
                     output, _, mask, _, _ = self.model(batch_x, None, None, self.args.train_epochs)
-                    pred, true = self._inverse_transform([output, batch_y])
-                    trues.append((true*mask).cpu())
+                    pred = batch_x[..., :self.args.input_base_dim]
+                    trues.append((output*mask).cpu())
                     preds.append((pred*mask).cpu())
                 else:
-                    output, _, mask, _, _ = self.model(batch_x, label=None)
+                    output, _, _, _, _ = self.model(batch_x, label=None)
                     pred, true = self._inverse_transform([output, batch_y])
                     preds.append(pred.cpu())
                     trues.append(true.cpu())
@@ -203,36 +218,49 @@ class Exp_gpt_st(Exp_Basic):
         preds = torch.cat(preds, dim=0)
         trues = torch.cat(trues, dim=0)
 
+        if self.mode == 'pretrain':
+            mae, rmse = metrics.compute_all_metrics(preds, trues)
+            logger.info(f'***** Average Horizon, Test MAE: {mae:.4f}, Test RMSE: {rmse:.4f} *****')
+            results = pd.DataFrame(columns=['Time','Test MAE', 'Test RMSE'], index=range(1))
+            results.iloc[0, 0]= 'Average'
+            results.iloc[0, 1]= mae
+            results.iloc[0, 2]= rmse
 
-        if self.horizon == 24: 
+        else:
             mae_day = []
             rmse_day = []
+            mae, rmse = metrics.compute_all_metrics(preds, trues)
+            logger.info(f'***** Average Horizon, Test MAE: {mae:.4f}, Test RMSE: {rmse:.4f} *****')
+            mae_day.append(mae)
+            rmse_day.append(rmse)
+            if self.horizon == 24: 
 
-            for i in range(0, self.horizon, 8):
-                pred = preds[:, i: i + 8]
-                true = trues[:, i: i + 8]
-                result = metrics.compute_all_metrics(pred, true, 0.0)
-                mae_day.append(result[0])
-                rmse_day.append(result[1])
+                for i in range(0, self.horizon, 8):
+                    pred = preds[:,:, i: i + 8]
+                    true = trues[:,:, i: i + 8]
+                    result = metrics.compute_all_metrics(pred, true)
+                    mae_day.append(result[0])
+                    rmse_day.append(result[1])
 
-            logger.info(f'***** 0-7 (1-24h) Test MAE: {mae_day[0]:.4f}, Test RMSE: {rmse_day[0]:.4f} *****')
-            logger.info(f'***** 8-15 (25-48h) Test MAE: {mae_day[1]:.4f}, Test RMSE: {rmse_day[1]:.4f} *****')
-            logger.info(f'***** 16-23 (49-72h) Test MAE: {mae_day[2]:.4f}, Test RMSE: {rmse_day[2]:.4f} *****')
+                logger.info(f'***** 0-7 (1-24h) Test MAE: {mae_day[1]:.4f}, Test RMSE: {rmse_day[1]:.4f} *****')
+                logger.info(f'***** 8-15 (25-48h) Test MAE: {mae_day[2]:.4f}, Test RMSE: {rmse_day[2]:.4f} *****')
+                logger.info(f'***** 16-23 (49-72h) Test MAE: {mae_day[3]:.4f}, Test RMSE: {rmse_day[3]:.4f} *****')
 
-            results = pd.DataFrame(columns=['Time','Test MAE', 'Test RMSE'], index=range(4))
-            Time_list=['1-24h','25-48h','49-72h', 'SuddenChange']
-            for i in range(3):
-                results.iloc[i, 0]= Time_list[i]
-                results.iloc[i, 1]= mae_day[i]
-                results.iloc[i, 2]= rmse_day[i]
-        else:
-            print('The output length is not 24!!!')
+                results = pd.DataFrame(columns=['Time','Test MAE', 'Test RMSE'], index=range(5))
+                Time_list=['Average','1-24h','25-48h','49-72h', 'SuddenChange']
+                for i in range(4):
+                    results.iloc[i, 0]= Time_list[i]
+                    results.iloc[i, 1]= mae_day[i]
+                    results.iloc[i, 2]= rmse_day[i]
+            else:
+                print('The output length is not 24!!!')
 
-        mask_sudden_change = metrics.sudden_changes_mask(trues, datapath=self.data_floder, null_val=0.0, threshold_start=75, threshold_change=20)
-        results.iloc[3, 0] = Time_list[3]
-        mae_sc, rmse_sc = metrics.compute_sudden_change(mask_sudden_change, preds, trues, null_value=0.0)
-        results.iloc[3, 1:] = [mae_sc, rmse_sc]
-        logger.info(f'***** Sudden Changes MAE: {mae_sc:.4f}, Test RMSE: {rmse_sc:.4f} *****')
-
+            mask_sudden_change = metrics.sudden_changes_mask(trues, datapath=self.data_floder, null_val=0.0, threshold_start=75, threshold_change=20)
+            results.iloc[4, 0] = Time_list[4]
+            mae_sc, rmse_sc = metrics.compute_sudden_change(mask_sudden_change, preds, trues, null_value=0.0)
+            results.iloc[4, 1:] = [mae_sc, rmse_sc]
+            logger.info(f'***** Sudden Changes MAE: {mae_sc:.4f}, Test RMSE: {rmse_sc:.4f} *****')
+        
         results.to_csv(os.path.join(self.pt_dir, f'metrics_{self.cur_exp}.csv'), index = False)
+        # results.to_csv(os.path.join(folder_path, f'metrics_{self.cur_exp}.csv'), index = False)
 

@@ -1,9 +1,10 @@
 import torch
 import numpy as np
 import os
+import ipdb
 
 
-def masked_mse(preds, labels, null_val = 0.0, mask = None): # np.nan
+def masked_mse(preds, labels, mask = None, null_val = 0.0): # np.nan
     '''
     Calculate MSE.
     The missing values in labels will be masked.
@@ -24,14 +25,14 @@ def masked_mse(preds, labels, null_val = 0.0, mask = None): # np.nan
     return torch.mean(loss)
 
 
-def masked_rmse(preds, labels, null_val = np.nan, mask = None):
+def masked_rmse(preds, labels, mask = None, null_val = 0.0):
     if mask == None:
         return torch.sqrt(masked_mse(preds=preds, labels=labels, null_val=null_val))
     else:
         return torch.sqrt(masked_mse(preds=preds, labels=labels, null_val=null_val, mask = mask))
 
 
-def masked_mae(preds, labels, null_val = np.nan, mask = None):
+def masked_mae(preds, labels, mask = None, null_val = 0.0):
     if mask == None:
         if np.isnan(null_val):
             mask = ~torch.isnan(labels)
@@ -40,19 +41,18 @@ def masked_mae(preds, labels, null_val = np.nan, mask = None):
     mask = mask.float()
     mask /= torch.mean((mask))
     mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
-
     loss = torch.abs(preds-labels)
     loss = loss * mask
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
     return torch.mean(loss)
 
 
-def compute_all_metrics(pred, real, null_value =np.nan):
-    mae = masked_mae(pred, real, null_value).item()
-    rmse = masked_rmse(pred, real, null_value).item()
+def compute_all_metrics(pred, real):
+    mae = masked_mae(pred, real).item()
+    rmse = masked_rmse(pred, real).item()
     return mae, rmse
 
-def sudden_changes_mask_times(labels, datapath, null_val = np.nan, threshold_start = 75, threshold_change = 20):
+def sudden_changes_mask_times(labels, datapath, null_val = 0.0, threshold_start = 75, threshold_change = 20):
     '''
     Create the mask for sudden change case.
     The parameter 'threshold_start' and 'threshold_change' can be changed.
@@ -79,7 +79,7 @@ def sudden_changes_mask_times(labels, datapath, null_val = np.nan, threshold_sta
         torch.save(mask, path)
     return mask
 
-def sudden_changes_mask(labels, datapath, null_val = np.nan, threshold_start = 75, threshold_change = 20):
+def sudden_changes_mask(labels, datapath, null_val = 0.0, threshold_start = 75, threshold_change = 20):
     '''
     Create the mask for sudden change case.
     The parameter 'threshold_start' and 'threshold_change' can be changed.
@@ -106,8 +106,8 @@ def sudden_changes_mask(labels, datapath, null_val = np.nan, threshold_start = 7
         torch.save(mask, path)
     return mask
 
-def compute_sudden_change(mask, pred, real, null_value):
-    mae = masked_mae(pred, real, null_value, mask).item()
-    rmse = masked_rmse(pred, real, null_value, mask).item()
+def compute_sudden_change(mask, pred, real, null_value=0.0):
+    mae = masked_mae(pred, real, mask, null_value).item()
+    rmse = masked_rmse(pred, real, mask, null_value).item()
     return mae, rmse
 

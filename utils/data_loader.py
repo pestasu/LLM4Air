@@ -37,9 +37,10 @@ class get_dataset(Dataset):
     def __read_data__(self, mode):
         data = np.load(os.path.join(self.data_root_path, self.data_path, mode+'.npz'))
         self.x = data['x'].transpose(1, 0, 2, 3) # num_samples, num_station, seq_len, num_features
-        self.y = data['y'][..., :1].transpose(1, 0, 2, 3)
+        self.y = data['y'].transpose(1, 0, 2, 3)
         if mode == 'train':
             self.scaler = data['scaler']
+        
         
     def __getitem__(self, index):
         return torch.Tensor(self.x[index]), torch.Tensor(self.y[index])
@@ -60,9 +61,10 @@ class get_dataset_time(Dataset):
         data = np.load(os.path.join(self.data_root_path, self.data_path, mode+'.npz'))
         num_station, num_samples, seq_len, num_features = data['x'].shape
         self.x = data['x'].reshape(num_station * num_samples, seq_len, num_features)
-        self.y = data['y'].reshape(num_station * num_samples, -1, num_features)[..., :1]
+        self.y = data['y'].reshape(num_station * num_samples, -1, num_features)
         if mode == 'train':
             self.scaler = data['scaler']
+        # ipdb.set_trace()
         
     def __getitem__(self, index):
         return torch.Tensor(self.x[index]), torch.Tensor(self.y[index])

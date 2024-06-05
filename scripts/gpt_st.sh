@@ -1,5 +1,5 @@
 python -u main.py --is_training 1 \
---model "gagnn" \
+--model "gpt_st" \
 --data "beijing" \
 --version 0 \
 --gpu "0" 

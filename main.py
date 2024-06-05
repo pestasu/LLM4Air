@@ -30,9 +30,6 @@ def main():
 
     # pt
     parser.add_argument('--need_pt', type=int, default=0, help='whether continue pretrain')
-    parser.add_argument('--pt_model_dir', type=str, default='null', help='the base model dir for need_pt')
-    parser.add_argument('--pt_layers', type=str, default='null', help='the layers in llm needed to be trained')
-    parser.add_argument('--pt_data', type=str, default='null', help='the dataset used in pretrain, use _ to separate')
 
     # optimization
     parser.add_argument('--pct_start', type=float, default=0.3, help='pct_start')
@@ -41,7 +38,7 @@ def main():
     parser.add_argument('--save_iter', type=int, default=400, help='save model each save_iter')
     parser.add_argument('--lradj', type=str, default='type3', help='adjust learning rate: consine, type1, type2, type3')
     parser.add_argument('--max_grad_norm', type=float, default=5.0)
-    parser.add_argument('--patience', type=int, default=10)
+    parser.add_argument('--patience', type=int, default=15)
 
     # GPU
     parser.add_argument('--gpu', type=int, default=0, help='gpu')

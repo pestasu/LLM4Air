@@ -66,14 +66,19 @@ class Gagnn(nn.Module):
             self.global_gnn.append(NodeModel(args.gnn_h,1,args.gnn_h))
         if self.mode == 'ag':
             self.decoder = DecoderModule(args.x_em,args.edge_h,args.gnn_h,args.gnn_layer,args.city_num,args.group_num)
-            self.predMLP = Seq(Lin(args.gnn_h,16),ReLU(inplace=True),Lin(16,1),ReLU(inplace=True))
+            self.predMLP = Seq(
+                Lin(args.gnn_h,16),
+                ReLU(inplace=True),
+                Lin(16,1),
+                # ReLU(inplace=True)
+                )
         else:
             self.decoder = DecoderModule(args.x_em,args.edge_h,args.gnn_h,args.gnn_layer,args.city_num,args.group_num)
             self.predMLP = Seq(
                 Lin(args.gnn_h,16),
                 ReLU(inplace=True),
                 Lin(16,self.pred_len),
-                ReLU(inplace=True)
+                # ReLU(inplace=True)
                 )	 #Lin(args.gnn_h,self.pred_len)
     def batchInput(self,x,edge_w,edge_index):
         sta_num = x.shape[1]
@@ -191,6 +196,9 @@ class Gagnn(nn.Module):
                     res = tmp_res
                 else:
                     res = torch.cat([res,tmp_res],dim=-1)
+                    
+            res = res.reshape(-1,self.city_num,self.pred_len, 1)
+
         else:
             new_x = self.decoder(new_x,self.w,g_edge_index,g_edge_w,edge_index,edge_w)
             res = self.predMLP(new_x)
